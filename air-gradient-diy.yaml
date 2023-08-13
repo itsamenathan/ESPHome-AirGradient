@@ -28,9 +28,9 @@ button:
       then:
         - switch.toggle: safe_mode_switch
 
-# TODO
 dashboard_import:
-  package_import_url: github://ajfriesen/ESPHome-AirGradient/main/air-gradient.yaml
+  package_import_url: github://itsamenathan/ESPHome-AirGradient/blob/main/air-gradient-diy.yaml@main
+
 
 i2c:
   sda: D2

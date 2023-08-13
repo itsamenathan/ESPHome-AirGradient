@@ -1,26 +1,22 @@
+# Include globals
+<<: !include secrets.yaml
+
 esphome:
   name: air-gradient
+  friendly_name: Air-Gradient
   platform: ESP8266
-  board: d1_mini_pro
+  board: d1_mini
 
   project:
     name: ajfriesen.ESPHome-AirGradient
     version: "1.0"
-
-# Enable logging
-logger:
-
-# Enable Home Assistant API
-api:
-
-ota:
-  password: !secret ota_password
 
 # Create a switch for safe_mode in order to flash the device
 # Solution from this thread:
 # https://community.home-assistant.io/t/esphome-flashing-over-wifi-does-not-work/357352/1
 switch:
   - platform: safe_mode
+    id: safe_mode_switch
     name: "Flash Mode (Safe Mode)"
 
 button:
@@ -30,32 +26,19 @@ button:
     icon: "mdi:cellphone-arrow-down"
     on_press:
       then:
-        - switch.toggle: safe_mode
+        - switch.toggle: safe_mode_switch
 
+# TODO
 dashboard_import:
-# package_import_url: github://esphome/esphome-project-template/project-template-esp32.yaml@v6
   package_import_url: github://ajfriesen/ESPHome-AirGradient/main/air-gradient.yaml
-
-wifi:
-  networks:
-  - ssid: !secret wifi_ssid
-    password: !secret wifi_password
-  reboot_timeout: 15min
-
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
-  ap:
-    ssid: "Air-Gradient Fallback Hotspot"
-    password: !secret fallback_ssid_password
-
-captive_portal:
 
 i2c:
   sda: D2
   scl: D1
 
 font:
-  - file: "font/monofont.ttf"
-    id: opensans
+  - file: "gfonts://Open Sans"
+    id: gfont
     size: 10
 
 display:
@@ -65,15 +48,16 @@ display:
     pages:
       - id: page1
         lambda: |-
-          it.printf(0, 0, id(opensans), "CO2: %.0fppm", id(co2).state);
-          it.printf(0, 10, id(opensans), "PM25: %.0f", id(pm25).state);
-          it.printf(0, 20, id(opensans), "Hmdty: %.0f", id(humidity).state);
-          it.printf(0, 30, id(opensans), "Temp: %.0fC", id(temp).state);
+          it.printf(0,  0, id(gfont), "%s",          id(aqi_text).state.c_str());
+          it.printf(0, 10, id(gfont), "AQI: %.0f",   id(pm_2_5_aqi).state);
+          it.printf(0, 20, id(gfont), "Temp: %.0f°F", id(temp_f).state);
+          it.printf(0, 30, id(gfont), "Hmdty: %.0f%%", id(humidity).state);
 #      - id: page2
 #        lambda: |-
-#          it.printf(0, 0, id(opensans), "PM10 : %.0f", id(pm10).state);
-#          it.printf(0, 10, id(opensans), "PM25 : %.0f", id(pm25).state);
-#          it.printf(0, 20, id(opensans), "PM100: %.0f", id(pm100).state);
+#          it.printf(0,  0, id(gfont), "PM10 : %.0f", id(pm10).state);
+#          it.printf(0, 10, id(gfont), "PM25 : %.0f", id(pm25).state);
+#          it.printf(0, 20, id(gfont), "PM100: %.0f", id(pm100).state);
+#          it.printf(0, 30, id(gfont), "CO2: %.0fppm", id(co2).state);
 # Maybe add a page later
 
 interval:
@@ -87,7 +71,7 @@ uart:
     tx_pin: D6
     baud_rate: 9600
     id: uart_1
-    
+
   - rx_pin: D4
     tx_pin: D3
     baud_rate: 9600
@@ -96,31 +80,41 @@ uart:
 sensor:
   - platform: sht3xd
     temperature:
-      id: temp
-      name: "Temperature"
+      id: temp_c
+      name: "Temperature Celsius"
+
     humidity:
       id: humidity
       name: "Humidity"
     address: 0x44
     update_interval: 5s
 
+  - platform: copy
+    source_id: temp_c
+    id: temp_f
+    name: "Temperature Fahrenheit"
+    filters:
+      - lambda: return x * (9.0/5.0) + 32.0;
+    unit_of_measurement: "°F"
+
   - platform: pmsx003
     # type can be PMSX003, PMS5003S, PMS5003T, PMS5003ST
     # https://esphome.io/components/sensor/pmsx003.html
-    type: PMSX003
+    type: PMS5003S
     uart_id: uart_1
-#    pm_1_0:
-#      id: pm10
-#      name: "Particulate Matter <1.0µm Concentration"
+    pm_1_0:
+      id: pm10
+      name: "Particulate Matter <1.0µm Concentration"
     pm_2_5:
       id: pm25
       name: "Particulate Matter <2.5µm Concentration"
-#    pm_10_0:
-#      id: pm100
-#      name: "Particulate Matter <10.0µm Concentration"
-#    formaldehyde:
-#      id: hcho
-#      name: "Formaldehyde (HCHO) concentration in µg per cubic meter"
+    pm_10_0:
+      id: pm100
+      name: "Particulate Matter <10.0µm Concentration"
+    formaldehyde:
+      id: hcho
+      name: "Formaldehyde (HCHO) concentration in µg per cubic meter"
+    update_interval: 120s
 
   - platform: senseair
     uart_id: uart_2
@@ -128,3 +122,58 @@ sensor:
       id: co2
       name: "SenseAir CO2 Value"
     update_interval: 60s
+
+  - platform: copy
+    source_id: pm25
+    id: pm_2_5
+    name: "PM <2.5µm Average 16min"
+    accuracy_decimals: 0
+    filters:
+      - sliding_window_moving_average:
+          window_size: 8
+          send_every: 1
+          send_first_at: 1
+    on_value:
+      lambda: |-
+          // https://en.wikipedia.org/wiki/Air_quality_index#Computing_the_AQI
+          if (id(pm_2_5).state < 12.0) {
+            // good
+            id(aqi_text).publish_state("Good");
+            id(pm_2_5_aqi).publish_state((50.0 - 0.0) / (12.0 - 0.0) * (id(pm_2_5).state - 0.0) + 0.0);
+          } else if (id(pm_2_5).state < 35.4) {
+            // moderate
+            id(aqi_text).publish_state("Moderate");
+            id(pm_2_5_aqi).publish_state((100.0 - 51.0) / (35.4 - 12.1) * (id(pm_2_5).state - 12.1) + 51.0);
+          } else if (id(pm_2_5).state < 55.4) {
+            // Unhealthy for Sensitive Groups
+            id(aqi_text).publish_state("Unhealthy Sensitive Groups");
+            id(pm_2_5_aqi).publish_state((150.0 - 101.0) / (55.4 - 35.5) * (id(pm_2_5).state - 35.5) + 101.0);
+          } else if (id(pm_2_5).state < 150.4) {
+            // unhealthy
+            id(aqi_text).publish_state("Unhealthy");
+            id(pm_2_5_aqi).publish_state((200.0 - 151.0) / (150.4 - 55.5) * (id(pm_2_5).state - 55.5) + 151.0);
+          } else if (id(pm_2_5).state < 250.4) {
+            // very unhealthy
+            id(aqi_text).publish_state("Very Unhealthy");
+            id(pm_2_5_aqi).publish_state((300.0 - 201.0) / (250.4 - 150.5) * (id(pm_2_5).state - 150.5) + 201.0);
+          } else if (id(pm_2_5).state < 350.4) {
+            // hazardous
+            id(aqi_text).publish_state("Hazardous");
+            id(pm_2_5_aqi).publish_state((400.0 - 301.0) / (350.4 - 250.5) * (id(pm_2_5).state - 250.5) + 301.0);
+          } else if (id(pm_2_5).state < 500.4) {
+            // hazardous 2
+            id(aqi_text).publish_state("Hazardous");
+            id(pm_2_5_aqi).publish_state((500.0 - 401.0) / (500.4 - 350.5) * (id(pm_2_5).state - 350.5) + 401.0);
+          }
+
+  - platform: template
+    name: "PM <2.5 AQI"
+    unit_of_measurement: "aqi"
+    icon: "mdi:air-filter"
+    accuracy_decimals: 0
+    id: pm_2_5_aqi
+
+text_sensor:
+  - platform: template
+    name: "AQI Level"
+    id: aqi_text
